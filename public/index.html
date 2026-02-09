@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visualización de Cambios en la Cobertura del Suelo en Querétaro (2016-2024)</title>
+    <!-- MapLibre GL JS (reemplaza Mapbox GL JS — libre, soporta addProtocol para PMTiles) -->
+    <script src='https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js'></script>
+    <link href='https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css' rel='stylesheet' />
+    <!-- Geocoder: sigue usando plugin de Mapbox (necesita token solo para API de búsqueda) -->
+    <script src='https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-geocoder/v4.7.0/mapbox-gl-geocoder.min.js'></script>
+    <link rel='stylesheet' href='https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-geocoder/v4.7.0/mapbox-gl-geocoder.css' type='text/css' />
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap" rel="stylesheet">
+    <script src='https://unpkg.com/@turf/turf@6/turf.min.js'></script>
+    <!-- PMTiles: permite cargar vector/raster tiles desde archivos estáticos en GCS -->
+    <script src="https://unpkg.com/pmtiles@3.0.6/dist/pmtiles.js"></script>
+    <style>
+        body { 
+            margin: 0; 
+            padding: 0; 
+            font-family: 'Roboto', sans-serif;
+            color: #333;
+        }
+        #map { 
+            position: absolute; 
+            top: 0; 
+            bottom: 0; 
+            width: 100%; 
+        }
+        .panel {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 20px;
+            max-height: calc(100vh - 40px);
+            overflow-y: auto;
+            transition: transform 0.3s ease-in-out;
+        }
+        #header {
+            position: absolute;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(255,255,255,0.9);
+            padding: 10px 20px;
+            text-align: center;
+            z-index: 1000;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border-radius: 0 0 8px 8px;
+            max-width: 80%;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        #logo {
+            width: 50px;
+            height: 50px;
+            margin-right: 20px;
+        }
+        #title {
+            margin: 0;
+            font-size: 20px;
+            color: #2c3e50;
+        }
+        #search {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 1001;
+            width: 300px;
+        }
+        #menu { 
+            position: absolute; 
+            top: 120px; 
+            left: 20px;
+            width: 270px;
+            transform: translateX(0);
+        }
+        #menu.retracted {
+            transform: translateX(-300px);
+        }
+        #menu-toggle {
+            position: absolute;
+            top: 50%;
+            right: 0px;
+            width: 30px;
+            height: 60px;
+            background: white;
+            border-radius: 0 5px 5px 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            box-shadow: 2px 0 5px rgba(0,0,0,0.1);
+            transform: translateY(-50%);
+        }
+        #menu-toggle::after {
+            content: '◀';
+            transition: transform 0.3s ease-in-out;
+        }
+        #menu.retracted #menu-toggle::after {
+            transform: rotate(180deg);
+        }
+        #slider { 
+            position: absolute; 
+            bottom: 30px; 
+            left: 50%; 
+            transform: translateX(-50%); 
+            width: 300px; 
+            background: white;
+            padding: 10px 20px;
+            border-radius: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        #stats { 
+            position: absolute; 
+            top: 120px; 
+            right: 20px; 
+            width: 250px;
+        }
+        .maplibregl-ctrl-group { 
+            margin-top: 70px; 
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h3 {
+            margin-top: 0;
+            margin-bottom: 15px;
+            font-weight: 700;
+            color: #2c3e50;
+        }
+        label {
+            display: flex;
+            align-items: center;
+            margin-bottom: 8px;
+            font-weight: 300;
+        }
+        input[type="checkbox"] {
+            margin-right: 8px;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            margin-right: 10px;
+            border-radius: 3px;
+        }
+        input[type="range"] {
+            width: 100%;
+            margin-bottom: 10px;
+        }
+        #yearDisplay {
+            display: block;
+            text-align: center;
+            font-weight: 700;
+            font-size: 18px;
+            color: #2c3e50;
+        }
+    </style>
+</head>
+<body>
+    <div id='header'>
+        <img id='logo' src='https://media.licdn.com/dms/image/v2/D560BAQE6I-jybXhV0A/company-logo_200_200/company-logo_200_200/0/1666159671955/blackprint_technologies_logo?e=2147483647&v=beta&t=FZZJP3dE_JKc1MbWb-pFa7iCn4W6u4f69MAcMvXwaPU' alt='Blackprint Technologies Logo'>
+        <h1 id='title'>Visualización de Cambios en la Cobertura del Suelo en Querétaro (2016-2024)</h1>
+    </div>
+    <div id='search'></div>
+    <div id='map'></div>
+    <div id='menu' class='panel'>
+        <div id='menu-toggle'></div>
+        <h3>Capas</h3>
+        <label><input type='checkbox' id='landcover2016' checked> Cobertura del Suelo 2016</label>
+        <label><input type='checkbox' id='landcover2024'> Cobertura del Suelo 2024</label>
+        <label><input type='checkbox' id='landcoverChange'> Cambios en Cobertura del Suelo</label>
+        <label><input type='checkbox' id='trees2016'> Árboles Individuales 2016</label>
+        <label><input type='checkbox' id='trees2024'> Árboles Individuales 2024</label>
+        <label><input type='checkbox' id='treeChange'> Cambios en Árboles Individuales</label>
+        <label><input type='checkbox' id='satellite2017'> Imágenes Satelitales 2017</label>
+        <label><input type='checkbox' id='satellite2024'> Imágenes Satelitales 2024</label>
+        <div id="satellite-opacity-control" style="display: none; margin-top: 10px; margin-bottom: 15px;">
+            <label for="satellite-opacity">Opacidad de imágenes satelitales:</label>
+            <input type="range" id="satellite-opacity" min="0" max="100" value="70" style="width: 100%;">
+            <span id="satellite-opacity-value">70%</span>
+        </div>
+        <h3>Categorías</h3>
+        <label><input type='checkbox' id='filter-all' checked> Todas las categorías</label>
+        <label><input type='checkbox' id='filter-impervious' checked><span class="legend-color" style="background-color: #808080;"></span> Superficie Impermeable</label>
+        <label><input type='checkbox' id='filter-bareland' checked><span class="legend-color" style="background-color: #D2B48C;"></span> Terreno descubierto</label>
+        <label><input type='checkbox' id='filter-shrub' checked><span class="legend-color" style="background-color: #90EE90;"></span> Arbustos</label>
+        <label><input type='checkbox' id='filter-forest' checked><span class="legend-color" style="background-color: #006400;"></span> Árboles</label>
+        <label><input type='checkbox' id='filter-grass' checked><span class="legend-color" style="background-color: #9ACD32;"></span> Pasto</label>
+        <label><input type='checkbox' id='filter-water' checked><span class="legend-color" style="background-color: #0000FF;"></span> Agua</label>
+        <h3>Cambios</h3>
+        <div class="legend-item"><span class="legend-color" style="background-color: #FFA500;"></span> Añadido</div>
+        <div class="legend-item"><span class="legend-color" style="background-color: #FF0000;"></span> Removido</div>
+    </div>
+    <div id='slider'>
+        <input type='range' min='2016' max='2024' value='2016' step='8' id='yearSlider'>
+        <span id='yearDisplay'>2016</span>
+    </div>
+    <script>
+    // =========================================================================
+    // ⚙️  CONFIGURACIÓN DE PRODUCCIÓN — EDITA ESTOS 2 VALORES
+    // =========================================================================
+    
+    // 1) Nombre de tu bucket en Google Cloud Storage (sin gs://)
+    //    Ejemplo: 'blackprint-touchpoint-data'
+    const GCS_BUCKET = 'TU_BUCKET_AQUI';
+
+    // 2) URL de tu TiTiler en Cloud Run
+    //    Ejemplo: 'https://blackprint-titiler-abc123-uc.a.run.app'
+    const TITILER_URL = 'TU_TITILER_URL_AQUI';
+
+    // =========================================================================
+    // NO NECESITAS CAMBIAR NADA DEBAJO DE ESTA LÍNEA
+    // =========================================================================
+
+    const GCS_BASE_URL = `https://storage.googleapis.com/${GCS_BUCKET}`;
+    
+    // Token de Mapbox — solo para el geocoder (búsqueda de ubicaciones)
+    const MAPBOX_TOKEN = 'pk.eyJ1IjoiZ2VyaW9uOSIsImEiOiJjbTg3dzVkOWkwamUwMndvcDBpY2Jjem9lIn0.q_eEy7Z60ddees6luj2xtg';
+
+    // =========================================================================
+    // REGISTRAR PROTOCOLO PMTiles
+    // =========================================================================
+    const pmtilesProtocol = new pmtiles.Protocol();
+    maplibregl.addProtocol("pmtiles", pmtilesProtocol.tile);
+    
+    // =========================================================================
+    // INICIALIZAR MAPA
+    // =========================================================================
+    var map = new maplibregl.Map({
+        container: 'map',
+        style: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
+        center: [-100.3899, 20.5888],
+        zoom: 13
+    });
+
+    map.on('load', function() {
+        
+        let currentSatelliteOpacity = 0.7;
+        
+        const landcoverColorMatch = [
+            'match', ['get', 'CateTitle'],
+            'impervious',  '#808080',
+            'bareland',    '#D2B48C',
+            'bare_ground', '#D2B48C',
+            'shrub',       '#90EE90',
+            'forest',      '#006400',
+            'grass',       '#9ACD32',
+            'water',       '#0000FF',
+            '#D2B48C'
+        ];
+        
+        const changeColorMatch = [
+            'match', ['get', 'Change'],
+            'added',   '#FFA500',
+            'removed', '#FF0000',
+            '#D2B48C'
+        ];
+        
+        // =================================================================
+        // FUENTES Y CAPAS VECTORIALES (PMTiles desde GCS)
+        // =================================================================
+        
+        map.addSource('landcover2016-source', {
+            type: 'vector',
+            url: `pmtiles://${GCS_BASE_URL}/vector/pmtiles/landcover_2016.pmtiles`
+        });
+        map.addLayer({
+            'id': 'landcover2016-layer',
+            'type': 'fill',
+            'source': 'landcover2016-source',
+            'source-layer': 'landcover_2016',
+            'paint': { 'fill-color': landcoverColorMatch, 'fill-opacity': 0.7 },
+            'layout': { 'visibility': 'visible' }
+        });
+
+        map.addSource('landcover2024-source', {
+            type: 'vector',
+            url: `pmtiles://${GCS_BASE_URL}/vector/pmtiles/landcover_2024.pmtiles`
+        });
+        map.addLayer({
+            'id': 'landcover2024-layer',
+            'type': 'fill',
+            'source': 'landcover2024-source',
+            'source-layer': 'landcover_2024',
+            'paint': { 'fill-color': landcoverColorMatch, 'fill-opacity': 0.7 },
+            'layout': { 'visibility': 'none' }
+        });
+
+        map.addSource('landcoverChange-source', {
+            type: 'vector',
+            url: `pmtiles://${GCS_BASE_URL}/vector/pmtiles/landcover_change.pmtiles`
+        });
+        map.addLayer({
+            'id': 'landcoverChange-layer',
+            'type': 'fill',
+            'source': 'landcoverChange-source',
+            'source-layer': 'landcover_change',
+            'paint': { 'fill-color': changeColorMatch, 'fill-opacity': 0.9 },
+            'layout': { 'visibility': 'none' }
+        });
+
+        map.addSource('trees2016-source', {
+            type: 'vector',
+            url: `pmtiles://${GCS_BASE_URL}/vector/pmtiles/single_tree_2016.pmtiles`
+        });
+        map.addLayer({
+            'id': 'trees2016-layer',
+            'type': 'fill',
+            'source': 'trees2016-source',
+            'source-layer': 'single_tree_2016',
+            'paint': { 'fill-color': '#006400', 'fill-opacity': 0.7 },
+            'layout': { 'visibility': 'none' }
+        });
+
+        map.addSource('trees2024-source', {
+            type: 'vector',
+            url: `pmtiles://${GCS_BASE_URL}/vector/pmtiles/single_tree_2024.pmtiles`
+        });
+        map.addLayer({
+            'id': 'trees2024-layer',
+            'type': 'fill',
+            'source': 'trees2024-source',
+            'source-layer': 'single_tree_2024',
+            'paint': { 'fill-color': '#006400', 'fill-opacity': 0.7 },
+            'layout': { 'visibility': 'none' }
+        });
+
+        map.addSource('treeChange-source', {
+            type: 'vector',
+            url: `pmtiles://${GCS_BASE_URL}/vector/pmtiles/single_tree_change.pmtiles`
+        });
+        map.addLayer({
+            'id': 'treeChange-layer',
+            'type': 'fill',
+            'source': 'treeChange-source',
+            'source-layer': 'single_tree_change',
+            'paint': { 'fill-color': changeColorMatch, 'fill-opacity': 0.9 },
+            'layout': { 'visibility': 'none' }
+        });
+        
+        // =================================================================
+        // FUENTES Y CAPAS RASTER (Imágenes Satelitales via TiTiler)
+        // =================================================================
+        // TiTiler en Cloud Run lee los COGs directamente de GCS usando
+        // HTTP Range Requests. No necesita una copia local de los archivos.
+        // =================================================================
+        
+        function buildRasterSource(year) {
+            const cogUrl = `${GCS_BASE_URL}/raster/satellite_${year}_cog.tif`;
+            const encodedUrl = encodeURIComponent(cogUrl);
+            return {
+                type: 'raster',
+                tiles: [`${TITILER_URL}/cog/tiles/{z}/{x}/{y}.png?url=${encodedUrl}`],
+                tileSize: 256,
+                minzoom: 10,
+                maxzoom: 18
+            };
+        }
+        
+        map.addSource('satellite2017-source', buildRasterSource('2017'));
+        map.addLayer({
+            'id': 'satellite2017-layer',
+            'type': 'raster',
+            'source': 'satellite2017-source',
+            'paint': { 'raster-opacity': currentSatelliteOpacity },
+            'layout': { 'visibility': 'none' }
+        });
+        
+        map.addSource('satellite2024-source', buildRasterSource('2024'));
+        map.addLayer({
+            'id': 'satellite2024-layer',
+            'type': 'raster',
+            'source': 'satellite2024-source',
+            'paint': { 'raster-opacity': currentSatelliteOpacity },
+            'layout': { 'visibility': 'none' }
+        });
+        
+        // =================================================================
+        // CONTROLES DE NAVEGACIÓN
+        // =================================================================
+        
+        map.addControl(new maplibregl.NavigationControl(), 'bottom-right');
+
+        var geocoder = new MapboxGeocoder({
+            accessToken: MAPBOX_TOKEN,
+            mapboxgl: maplibregl,
+            placeholder: 'Buscar ubicación'
+        });
+        document.getElementById('search').appendChild(geocoder.onAdd(map));
+        
+        // =================================================================
+        // TOGGLE DE VISIBILIDAD DE CAPAS
+        // =================================================================
+        
+        function updateSatelliteOpacity(opacity) {
+            currentSatelliteOpacity = opacity;
+            if (document.getElementById('satellite2017').checked) {
+                map.setPaintProperty('satellite2017-layer', 'raster-opacity', opacity);
+            }
+            if (document.getElementById('satellite2024').checked) {
+                map.setPaintProperty('satellite2024-layer', 'raster-opacity', opacity);
+            }
+            document.getElementById('satellite-opacity-value').textContent = 
+                `${Math.round(opacity * 100)}%`;
+        }
+        
+        var toggleableLayerIds = [
+            'landcover2016', 'landcover2024', 'landcoverChange',
+            'trees2016', 'trees2024', 'treeChange',
+            'satellite2017', 'satellite2024'
+        ];
+
+        toggleableLayerIds.forEach(function(layerId) {
+            var checkbox = document.getElementById(layerId);
+            
+            checkbox.onchange = function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                var mapLayerId = this.id + '-layer';
+                
+                if (this.checked) {
+                    map.setLayoutProperty(mapLayerId, 'visibility', 'visible');
+                } else {
+                    map.setLayoutProperty(mapLayerId, 'visibility', 'none');
+                }
+                
+                if (layerId === 'satellite2017' || layerId === 'satellite2024') {
+                    var sat2017Active = document.getElementById('satellite2017').checked;
+                    var sat2024Active = document.getElementById('satellite2024').checked;
+                    document.getElementById('satellite-opacity-control').style.display = 
+                        (sat2017Active || sat2024Active) ? 'block' : 'none';
+                }
+            };
+
+            var initialVisibility = (layerId === 'landcover2016') ? 'visible' : 'none';
+            map.setLayoutProperty(layerId + '-layer', 'visibility', initialVisibility);
+            checkbox.checked = (initialVisibility === 'visible');
+        });
+        
+        document.getElementById('satellite-opacity').oninput = function() {
+            updateSatelliteOpacity(parseInt(this.value) / 100);
+        };
+        
+        // =================================================================
+        // SLIDER DE AÑO
+        // =================================================================
+        
+        var slider = document.getElementById('yearSlider');
+        var yearDisplay = document.getElementById('yearDisplay');
+        
+        slider.oninput = function() {
+            var year = parseInt(this.value);
+            yearDisplay.textContent = year;
+            
+            var layerPairs = ['landcover', 'trees'];
+            
+            layerPairs.forEach(function(baseLayerId) {
+                var layerId2016 = baseLayerId + '2016';
+                var layerId2024 = baseLayerId + '2024';
+                var checkbox2016 = document.getElementById(layerId2016);
+                var checkbox2024 = document.getElementById(layerId2024);
+                
+                if (year === 2016) {
+                    map.setLayoutProperty(layerId2016 + '-layer', 'visibility', 'visible');
+                    map.setLayoutProperty(layerId2024 + '-layer', 'visibility', 'none');
+                    if (checkbox2016) checkbox2016.checked = true;
+                    if (checkbox2024) checkbox2024.checked = false;
+                } else if (year === 2024) {
+                    map.setLayoutProperty(layerId2016 + '-layer', 'visibility', 'none');
+                    map.setLayoutProperty(layerId2024 + '-layer', 'visibility', 'visible');
+                    if (checkbox2016) checkbox2016.checked = false;
+                    if (checkbox2024) checkbox2024.checked = true;
+                }
+            });
+
+            ['landcoverChange', 'treeChange'].forEach(function(layerId) {
+                var checkbox = document.getElementById(layerId);
+                if (checkbox) checkbox.checked = false;
+                map.setLayoutProperty(layerId + '-layer', 'visibility', 'none');
+            });
+
+            updateFilters();
+        };
+
+        // =================================================================
+        // FILTROS DE CATEGORÍA
+        // =================================================================
+        
+        var categoryFilters = document.querySelectorAll('[id^="filter-"]');
+        var allFilter = document.getElementById('filter-all');
+
+        function updateFilters() {
+            var selectedCategories = [];
+            var allCategoriesSelected = true;
+            
+            categoryFilters.forEach(function(filter) {
+                if (filter.id !== 'filter-all') {
+                    if (filter.checked) {
+                        selectedCategories.push(filter.id.replace('filter-', ''));
+                    } else {
+                        allCategoriesSelected = false;
+                    }
+                }
+            });
+
+            allFilter.checked = allCategoriesSelected;
+
+            var vectorLayers = [
+                'landcover2016-layer', 'landcover2024-layer', 'landcoverChange-layer',
+                'trees2016-layer', 'trees2024-layer', 'treeChange-layer'
+            ];
+            
+            vectorLayers.forEach(function(layerId) {
+                if (selectedCategories.length === 0) {
+                    map.setFilter(layerId, ['==', 'CateTitle', '']);
+                } else {
+                    map.setFilter(layerId, ['in', 'CateTitle', ...selectedCategories]);
+                }
+            });
+        }
+
+        categoryFilters.forEach(function(filter) {
+            filter.onchange = updateFilters;
+        });
+
+        allFilter.onchange = function() {
+            categoryFilters.forEach(function(filter) {
+                if (filter.id !== 'filter-all') {
+                    filter.checked = allFilter.checked;
+                }
+            });
+            updateFilters();
+        };
+
+        // =================================================================
+        // POPUP DE INFORMACIÓN AL HACER CLIC
+        // =================================================================
+        
+        map.on('click', function(e) {
+            var vectorLayerIds = [
+                'landcover2016-layer', 'landcover2024-layer', 'landcoverChange-layer',
+                'trees2016-layer', 'trees2024-layer', 'treeChange-layer'
+            ];
+            
+            var features = map.queryRenderedFeatures(e.point, { layers: vectorLayerIds });
+            
+            if (features.length > 0) {
+                var feature = features[0];
+                var popupContent = `<h3>${translateCategory(feature.properties.CateTitle)}</h3>`;
+                
+                if (feature.geometry && feature.geometry.type === 'Polygon') {
+                    var area = turf.area(feature.geometry);
+                    popupContent += `<p>Área: ${area.toFixed(2)} m²</p>`;
+                }
+                
+                if (feature.properties.Change) {
+                    var changeType = translateChange(feature.properties.Change);
+                    var changeDescription = changeType === 'Añadido' ? 'Crecimiento' : 'Decrecimiento';
+                    popupContent += `<p>Cambio: ${changeType} (${changeDescription})</p>`;
+                }
+                
+                if (feature.layer.id.includes('2016') || feature.layer.id.includes('2024')) {
+                    popupContent += `<p>Año: ${feature.layer.id.includes('2016') ? '2016' : '2024'}</p>`;
+                }
+                
+                new maplibregl.Popup()
+                    .setLngLat(e.lngLat)
+                    .setHTML(popupContent)
+                    .addTo(map);
+            }
+        });
+
+        function translateCategory(category) {
+            const translations = {
+                'impervious': 'Impermeable',
+                'bareland': 'Terreno descubierto',
+                'bare_ground': 'Terreno descubierto',
+                'shrub': 'Arbustos',
+                'forest': 'Árboles',
+                'grass': 'Pasto',
+                'water': 'Agua'
+            };
+            return translations[category] || category;
+        }
+
+        function translateChange(change) {
+            const translations = {
+                'added': 'Añadido',
+                'removed': 'Removido'
+            };
+            return translations[change] || change;
+        }
+
+        // =================================================================
+        // MENÚ RETRÁCTIL
+        // =================================================================
+        
+        document.getElementById('menu-toggle').addEventListener('click', function() {
+            document.getElementById('menu').classList.toggle('retracted');
+        });
+    });
+    </script>
+</body>
+</html>
+

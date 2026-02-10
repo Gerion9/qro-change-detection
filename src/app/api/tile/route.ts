@@ -186,24 +186,8 @@ export async function GET(request: NextRequest) {
     const cR = Math.min(w, Math.ceil(fR));
     const cB = Math.min(h, Math.ceil(fB));
 
-    if (verbose) {
-      const outW = Math.max(1, Math.round(TILE_SIZE * (cR - cL) / fW));
-      const outH = Math.max(1, Math.round(TILE_SIZE * (cB - cT) / fH));
-      const outX = Math.max(0, Math.round(TILE_SIZE * (cL - fL) / fW));
-      const outY = Math.max(0, Math.round(TILE_SIZE * (cT - fT) / fH));
-      return NextResponse.json({
-        step: '5-pixelcoords',
-        cogSize: { w, h },
-        origin: [oX, oY],
-        resolution: [rX, rY],
-        tileBounds: { tW, tS, tE, tN },
-        floatPixels: { fL, fT, fR, fB, fW, fH },
-        clampedPixels: { cL, cT, cR, cB },
-        output: { outW, outH, outX, outY },
-        bands: img.getSamplesPerPixel(),
-        outOfBounds: cR <= cL || cB <= cT,
-      });
-    }
+  // verbose=1 ahora continúa para leer pixels y reportar colores reales
+  // verbose=2 retorna solo diagnóstico sin leer pixels (rápido)
 
     // Tile fuera del área → transparente
     if (cR <= cL || cB <= cT) {
@@ -220,26 +204,78 @@ export async function GET(request: NextRequest) {
     const outX = Math.max(0, Math.round(TILE_SIZE * (cL - fL) / fW));
     const outY = Math.max(0, Math.round(TILE_SIZE * (cT - fT) / fH));
 
-    // 6) Leer pixels
+    // 6) Leer pixels — bandas por separado para evitar problemas de
+    //    color con JPEG/YCbCr (geotiff.js interleave no convierte bien)
     const rasters = await img.readRasters({
       window: [cL, cT, cR, cB],
       width: outW,
       height: outH,
-      interleave: true,
+      // Sin interleave: devuelve array de TypedArrays, una por banda
     });
 
-    const channels = img.getSamplesPerPixel() as 1 | 2 | 3 | 4;
-    const dataBuffer = Buffer.from(rasters as unknown as ArrayBuffer);
+    const bandCount = img.getSamplesPerPixel();
+    const pixelCount = outW * outH;
+
+    // Componer manualmente como RGB (3 canales)
+    const rgbBuffer = Buffer.alloc(pixelCount * 3);
+    const band0 = rasters[0] as Uint8Array;
+    const band1 = bandCount >= 2 ? (rasters[1] as Uint8Array) : band0;
+    const band2 = bandCount >= 3 ? (rasters[2] as Uint8Array) : band0;
+
+    for (let i = 0; i < pixelCount; i++) {
+      rgbBuffer[i * 3]     = band0[i]; // R
+      rgbBuffer[i * 3 + 1] = band1[i]; // G
+      rgbBuffer[i * 3 + 2] = band2[i]; // B
+    }
+
+    // verbose=1 → devolver diagnóstico CON valores de pixeles
+    if (verbose) {
+      const samplePixels = [];
+      for (let i = 0; i < Math.min(10, pixelCount); i++) {
+        samplePixels.push({
+          r: band0[i], g: band1[i], b: band2[i],
+        });
+      }
+      // También muestrear el centro del tile
+      const centerIdx = Math.floor(pixelCount / 2);
+      const centerPixel = {
+        r: band0[centerIdx], g: band1[centerIdx], b: band2[centerIdx],
+      };
+
+      // Estadísticas por banda
+      let rSum = 0, gSum = 0, bSum = 0;
+      for (let i = 0; i < pixelCount; i++) {
+        rSum += band0[i]; gSum += band1[i]; bSum += band2[i];
+      }
+      const bandAvg = {
+        r: Math.round(rSum / pixelCount),
+        g: Math.round(gSum / pixelCount),
+        b: Math.round(bSum / pixelCount),
+      };
+
+      return NextResponse.json({
+        step: '7-pixels-read',
+        cogSize: { w, h },
+        tileBounds: { tW, tS, tE, tN },
+        clampedPixels: { cL, cT, cR, cB },
+        output: { outW, outH, outX, outY },
+        bandCount,
+        photometricInterpretation: img.fileDirectory?.PhotometricInterpretation,
+        samplePixels,
+        centerPixel,
+        bandAvg,
+      });
+    }
 
     // 7) Crear PNG
     let png: Buffer;
     if (outW === TILE_SIZE && outH === TILE_SIZE && outX === 0 && outY === 0) {
-      png = await sharp(dataBuffer, {
-        raw: { width: TILE_SIZE, height: TILE_SIZE, channels },
+      png = await sharp(rgbBuffer, {
+        raw: { width: TILE_SIZE, height: TILE_SIZE, channels: 3 },
       }).png().toBuffer();
     } else {
-      const overlay = await sharp(dataBuffer, {
-        raw: { width: outW, height: outH, channels },
+      const overlay = await sharp(rgbBuffer, {
+        raw: { width: outW, height: outH, channels: 3 },
       }).ensureAlpha().png().toBuffer();
 
       png = await sharp({

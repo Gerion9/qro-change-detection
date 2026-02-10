@@ -160,20 +160,19 @@ export async function GET(request: NextRequest) {
     // 2) Abrir COG
     const tiff = await fromUrl(cogUrl);
 
-    // 3) Bounds del tile en EPSG:3857
+    // 3) Imagen principal: obtener geo-referencia y dimensiones
+    const mainImg = await tiff.getImage(0);
+    const [oX, oY] = mainImg.getOrigin();
+    const [rX, rY] = mainImg.getResolution();
+    const mainW = mainImg.getWidth();
+    const mainH = mainImg.getHeight();
+    const bandCount = mainImg.getSamplesPerPixel();
+    const photometric = mainImg.fileDirectory?.PhotometricInterpretation;
+
+    // 4) Bounds del tile en EPSG:3857
     const [tW, tS, tE, tN] = tileBounds(z, x, y);
 
-    // 4) Usar imagen principal (índice 0) — los overviews del COG no tienen
-    //    geo-referencia compatible con geotiff.js, así que siempre usamos la
-    //    imagen full-res y dejamos que readRasters() resamplee.
-    const img = await tiff.getImage(0);
-
-    // 5) Pixel coords
-    const [oX, oY] = img.getOrigin();
-    const [rX, rY] = img.getResolution();
-    const w = img.getWidth();
-    const h = img.getHeight();
-
+    // 5) Pixel coords en la imagen principal (full-res)
     const fL = (tW - oX) / rX;
     const fT = (tN - oY) / rY;
     const fR = (tE - oX) / rX;
@@ -181,131 +180,135 @@ export async function GET(request: NextRequest) {
     const fW = fR - fL;
     const fH = fB - fT;
 
-    const cL = Math.max(0, Math.floor(fL));
-    const cT = Math.max(0, Math.floor(fT));
-    const cR = Math.min(w, Math.ceil(fR));
-    const cB = Math.min(h, Math.ceil(fB));
-
-  // verbose=1 ahora continúa para leer pixels y reportar colores reales
-  // verbose=2 retorna solo diagnóstico sin leer pixels (rápido)
-
     // Tile fuera del área → transparente
-    if (cR <= cL || cB <= cT) {
+    if (fR <= 0 || fB <= 0 || fL >= mainW || fT >= mainH) {
       return new NextResponse(EMPTY_PNG, {
-        headers: {
-          'Content-Type': 'image/png',
-          'Cache-Control': 'public, s-maxage=86400, max-age=3600',
-        },
+        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, s-maxage=86400, max-age=3600' },
       });
     }
 
-    const outW = Math.max(1, Math.round(TILE_SIZE * (cR - cL) / fW));
-    const outH = Math.max(1, Math.round(TILE_SIZE * (cB - cT) / fH));
-    const outX = Math.max(0, Math.round(TILE_SIZE * (cL - fL) / fW));
-    const outY = Math.max(0, Math.round(TILE_SIZE * (cT - fT) / fH));
+    // 6) Encontrar el mejor overview del COG
+    //    Buscamos un overview cuya resolución sea ≥ 256 px para este tile.
+    //    NO llamamos getResolution()/getOrigin() en overviews (crashean),
+    //    calculamos proporcionalmente por dimensiones.
+    const imageCount = await tiff.getImageCount();
+    let bestImg = mainImg;
+    let bestW = mainW;
+    let bestH = mainH;
 
-    // 6) Leer pixels — interleaved (obligatorio para COGs JPEG)
-    const rasters = await img.readRasters({
+    for (let i = 1; i < imageCount; i++) {
+      try {
+        const ovr = await tiff.getImage(i);
+        const ovrW = ovr.getWidth();
+        const ovrH = ovr.getHeight();
+        // ¿Cuántos pixels del overview cubriría este tile?
+        const ovrTilePixels = Math.abs(fW) * (ovrW / mainW);
+        // Usar este overview si todavía da ≥ 256 px por tile
+        if (ovrTilePixels >= TILE_SIZE) {
+          bestImg = ovr;
+          bestW = ovrW;
+          bestH = ovrH;
+        }
+      } catch { /* skip bad overviews */ }
+    }
+
+    // 7) Convertir coordenadas de pixel del full-res al overview elegido
+    const scaleX = bestW / mainW;
+    const scaleY = bestH / mainH;
+
+    const cL = Math.max(0, Math.floor(fL * scaleX));
+    const cT = Math.max(0, Math.floor(fT * scaleY));
+    const cR = Math.min(bestW, Math.ceil(fR * scaleX));
+    const cB = Math.min(bestH, Math.ceil(fB * scaleY));
+
+    if (cR <= cL || cB <= cT) {
+      return new NextResponse(EMPTY_PNG, {
+        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, s-maxage=86400, max-age=3600' },
+      });
+    }
+
+    const readW = cR - cL;
+    const readH = cB - cT;
+
+    // 8) Leer pixels del overview a resolución nativa (SIN resampling en geotiff.js)
+    const rasters = await bestImg.readRasters({
       window: [cL, cT, cR, cB],
-      width: outW,
-      height: outH,
       interleave: true,
     });
 
-    const bandCount = img.getSamplesPerPixel();
-    const pixelCount = outW * outH;
-    const data = Buffer.from((rasters as any).buffer ?? (rasters as unknown as ArrayBuffer));
+    const pixelCount = readW * readH;
+    const raw = new Uint8Array((rasters as any).buffer ?? (rasters as unknown as ArrayBuffer));
 
-    // Detectar si necesitamos corregir colores
-    const photometric = img.fileDirectory?.PhotometricInterpretation;
-
-    // Para JPEG COGs con PHOTOMETRIC=YCBCR (6), geotiff.js a veces
-    // devuelve datos en YCbCr sin convertir. Para PHOTOMETRIC=RGB (2)
-    // con compresión JPEG, el orden puede ser BGR.
-    // Intentamos ambas correcciones:
-
-    const rgbBuffer = Buffer.alloc(pixelCount * 3);
+    // 9) Corregir colores si es necesario
+    let channels: 3 | 4 = 3;
+    let pixelData: Buffer;
 
     if (photometric === 6 && bandCount >= 3) {
-      // YCbCr → RGB conversion
+      // YCbCr → RGB
+      pixelData = Buffer.alloc(pixelCount * 3);
       for (let i = 0; i < pixelCount; i++) {
         const off = i * bandCount;
-        const Y  = data[off];
-        const Cb = data[off + 1];
-        const Cr = data[off + 2];
-        rgbBuffer[i * 3]     = Math.max(0, Math.min(255, Math.round(Y + 1.402 * (Cr - 128))));
-        rgbBuffer[i * 3 + 1] = Math.max(0, Math.min(255, Math.round(Y - 0.344136 * (Cb - 128) - 0.714136 * (Cr - 128))));
-        rgbBuffer[i * 3 + 2] = Math.max(0, Math.min(255, Math.round(Y + 1.772 * (Cb - 128))));
+        const Y  = raw[off];
+        const Cb = raw[off + 1];
+        const Cr = raw[off + 2];
+        pixelData[i * 3]     = Math.max(0, Math.min(255, Math.round(Y + 1.402 * (Cr - 128))));
+        pixelData[i * 3 + 1] = Math.max(0, Math.min(255, Math.round(Y - 0.344136 * (Cb - 128) - 0.714136 * (Cr - 128))));
+        pixelData[i * 3 + 2] = Math.max(0, Math.min(255, Math.round(Y + 1.772 * (Cb - 128))));
       }
     } else if (bandCount >= 3) {
-      // RGB o posible BGR — copiar y probar swap si la imagen se ve azul
-      // Primero copiamos directo, pero hacemos swap B↔R por si GDAL escribió BGR
-      for (let i = 0; i < pixelCount; i++) {
-        const off = i * bandCount;
-        // Probar: swap canal 0 y 2 (BGR → RGB)
-        rgbBuffer[i * 3]     = data[off + 2]; // R ← canal 2
-        rgbBuffer[i * 3 + 1] = data[off + 1]; // G ← canal 1
-        rgbBuffer[i * 3 + 2] = data[off];     // B ← canal 0
-      }
+      // Copiar RGB directo (sin swap, geotiff.js ya debería devolver RGB)
+      pixelData = Buffer.from(raw.buffer, raw.byteOffset, pixelCount * bandCount);
+      channels = Math.min(bandCount, 4) as 3 | 4;
     } else {
-      // Grayscale
+      // Grayscale → RGB
+      pixelData = Buffer.alloc(pixelCount * 3);
       for (let i = 0; i < pixelCount; i++) {
-        rgbBuffer[i * 3] = rgbBuffer[i * 3 + 1] = rgbBuffer[i * 3 + 2] = data[i * bandCount];
+        pixelData[i * 3] = pixelData[i * 3 + 1] = pixelData[i * 3 + 2] = raw[i];
       }
     }
 
-    // verbose=1 → devolver diagnóstico CON valores de pixeles
+    // verbose=1 → diagnóstico
     if (verbose) {
-      const rawSample = [];
-      const rgbSample = [];
+      const sample = [];
       for (let i = 0; i < Math.min(5, pixelCount); i++) {
         const off = i * bandCount;
-        rawSample.push({ ch0: data[off], ch1: data[off + 1], ch2: bandCount >= 3 ? data[off + 2] : null });
-        rgbSample.push({ r: rgbBuffer[i * 3], g: rgbBuffer[i * 3 + 1], b: rgbBuffer[i * 3 + 2] });
+        sample.push({ raw: [raw[off], raw[off + 1], raw[off + 2]], rgb: [pixelData[i * 3], pixelData[i * 3 + 1], pixelData[i * 3 + 2]] });
       }
-
-      // Estadísticas por canal (raw)
-      let s0 = 0, s1 = 0, s2 = 0;
-      for (let i = 0; i < pixelCount; i++) {
-        const off = i * bandCount;
-        s0 += data[off]; s1 += data[off + 1]; if (bandCount >= 3) s2 += data[off + 2];
-      }
-
       return NextResponse.json({
-        step: '7-pixels-read',
-        cogSize: { w, h },
-        output: { outW, outH, outX, outY },
-        bandCount,
-        photometric,
-        colorFix: photometric === 6 ? 'YCbCr→RGB' : 'BGR→RGB swap',
-        rawChannelAvg: {
-          ch0: Math.round(s0 / pixelCount),
-          ch1: Math.round(s1 / pixelCount),
-          ch2: Math.round(s2 / pixelCount),
-        },
-        rawSample,
-        rgbSample,
+        step: '9-color-corrected',
+        mainSize: [mainW, mainH],
+        overviewUsed: { w: bestW, h: bestH, scale: [scaleX, scaleY] },
+        readWindow: [cL, cT, cR, cB],
+        readSize: [readW, readH],
+        bandCount, photometric,
+        colorFix: photometric === 6 ? 'YCbCr→RGB' : 'direct',
+        sample,
       });
     }
 
-    // 7) Crear PNG
+    // 10) Crear PNG con sharp: leer a raw → resize a 256×256
+    //     Calculamos qué porción del tile de 256×256 ocupa esta lectura
+    const outX = Math.max(0, Math.round(TILE_SIZE * (cL / scaleX - fL) / fW));
+    const outY = Math.max(0, Math.round(TILE_SIZE * (cT / scaleY - fT) / fH));
+    const outW = Math.min(TILE_SIZE - outX, Math.max(1, Math.round(TILE_SIZE * readW / (fW * scaleX))));
+    const outH = Math.min(TILE_SIZE - outY, Math.max(1, Math.round(TILE_SIZE * readH / (fH * scaleY))));
+
+    // Resize los pixels leídos al tamaño de salida
+    const resized = await sharp(pixelData, {
+      raw: { width: readW, height: readH, channels },
+    }).resize(outW, outH).ensureAlpha().png().toBuffer();
+
     let png: Buffer;
     if (outW === TILE_SIZE && outH === TILE_SIZE && outX === 0 && outY === 0) {
-      png = await sharp(rgbBuffer, {
-        raw: { width: TILE_SIZE, height: TILE_SIZE, channels: 3 },
-      }).png().toBuffer();
+      png = resized;
     } else {
-      const overlay = await sharp(rgbBuffer, {
-        raw: { width: outW, height: outH, channels: 3 },
-      }).ensureAlpha().png().toBuffer();
-
       png = await sharp({
         create: {
           width: TILE_SIZE, height: TILE_SIZE, channels: 4,
           background: { r: 0, g: 0, b: 0, alpha: 0 },
         },
       })
-        .composite([{ input: overlay, left: outX, top: outY }])
+        .composite([{ input: resized, left: outX, top: outY }])
         .png()
         .toBuffer();
     }

@@ -3,12 +3,14 @@
   "version": "1.0.0",
   "description": "Map viewer — Vercel (Node.js tile server) + GCS privado",
   "scripts": {
-    "start": "serve public"
+    "start": "serve public",
+    "dev": "node dev-server.js"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.7.0",
-    "geotiff": "^2.1.3",
-    "sharp": "^0.33.2",
     "serve": "^14.2.1"
+  },
+  "devDependencies": {
+    "express": "^5.2.1"
   }
 }

@@ -1,7 +1,12 @@
 {
-  "name": "blackprint-touchpoint",
+  "name": "blackprint-map-viewer",
   "version": "1.0.0",
-  "private": true,
-  "description": "Visualización de cambios en cobertura del suelo - Querétaro 2016-2024"
+  "description": "Map viewer for Blackprint Technologies — Vercel + GCS privado",
+  "scripts": {
+    "start": "serve public"
+  },
+  "dependencies": {
+    "@google-cloud/storage": "^7.7.0",
+    "serve": "^14.2.1"
+  }
 }
-

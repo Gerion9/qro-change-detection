@@ -239,28 +239,48 @@ export async function GET(request: NextRequest) {
     const pixelCount = readW * readH;
     const raw = new Uint8Array((rasters as any).buffer ?? (rasters as unknown as ArrayBuffer));
 
-    // 9) Pasar datos directo — geotiff.js ya maneja la conversión
-    //    YCbCr→RGB internamente al decodificar los tiles JPEG.
-    //    NO hacemos conversión manual (causa doble-conversión e
-    //    inconsistencia de colores entre tiles).
-    const channels: 3 | 4 = Math.min(bandCount, 4) as 3 | 4;
-    const pixelData = Buffer.from(raw.buffer, raw.byteOffset, pixelCount * channels);
+    // 9) Conversión YCbCr → RGB
+    //    geotiff.js NO convierte automáticamente para COGs JPEG+YCbCr.
+    //    Los datos crudos llegan como [Y, Cb, Cr] interleaved.
+    //    Siempre convertimos a RGB (nuestros COGs son JPEG con PHOTOMETRIC=YCBCR).
+    const rgbBuffer = Buffer.alloc(pixelCount * 3);
+
+    if (bandCount >= 3) {
+      for (let i = 0; i < pixelCount; i++) {
+        const off = i * bandCount;
+        const Y  = raw[off];
+        const Cb = raw[off + 1];
+        const Cr = raw[off + 2];
+        // ITU-R BT.601 conversion
+        rgbBuffer[i * 3]     = Math.max(0, Math.min(255, Math.round(Y + 1.402 * (Cr - 128))));
+        rgbBuffer[i * 3 + 1] = Math.max(0, Math.min(255, Math.round(Y - 0.344136 * (Cb - 128) - 0.714136 * (Cr - 128))));
+        rgbBuffer[i * 3 + 2] = Math.max(0, Math.min(255, Math.round(Y + 1.772 * (Cb - 128))));
+      }
+    } else {
+      // Grayscale fallback
+      for (let i = 0; i < pixelCount; i++) {
+        rgbBuffer[i * 3] = rgbBuffer[i * 3 + 1] = rgbBuffer[i * 3 + 2] = raw[i];
+      }
+    }
 
     // verbose=1 → diagnóstico
     if (verbose) {
       const sample = [];
       for (let i = 0; i < Math.min(5, pixelCount); i++) {
-        const off = i * channels;
-        sample.push({ r: pixelData[off], g: pixelData[off + 1], b: pixelData[off + 2] });
+        const rawOff = i * bandCount;
+        sample.push({
+          ycbcr: [raw[rawOff], raw[rawOff + 1], raw[rawOff + 2]],
+          rgb: [rgbBuffer[i * 3], rgbBuffer[i * 3 + 1], rgbBuffer[i * 3 + 2]],
+        });
       }
       return NextResponse.json({
-        step: '9-passthrough',
+        step: '9-ycbcr-to-rgb',
         mainSize: [mainW, mainH],
         overviewUsed: { w: bestW, h: bestH, scale: [scaleX, scaleY] },
         readWindow: [cL, cT, cR, cB],
         readSize: [readW, readH],
-        bandCount, channels, photometric,
-        colorFix: 'none (geotiff.js handles JPEG YCbCr internally)',
+        bandCount, photometric,
+        colorFix: 'YCbCr→RGB (always, BT.601)',
         sample,
       });
     }
@@ -273,8 +293,8 @@ export async function GET(request: NextRequest) {
     const outH = Math.min(TILE_SIZE - outY, Math.max(1, Math.round(TILE_SIZE * readH / (fH * scaleY))));
 
     // Resize los pixels leídos al tamaño de salida
-    const resized = await sharp(pixelData, {
-      raw: { width: readW, height: readH, channels },
+    const resized = await sharp(rgbBuffer, {
+      raw: { width: readW, height: readH, channels: 3 },
     }).resize(outW, outH).ensureAlpha().png().toBuffer();
 
     let png: Buffer;

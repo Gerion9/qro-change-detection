@@ -1,17 +1,13 @@
 /**
  * /api/tile -- Sirve tiles PNG desde COGs en GCS (bucket privado).
  *
- * Uso: GET /api/tile?year=2017&z=15&x=123&y=456
- *
- * Flujo:
- *   1. Genera URL firmada para el COG en GCS
- *   2. Lee la porcion correcta del COG usando geotiff.js (HTTP Range Requests)
- *   3. Convierte a PNG con sharp
- *   4. Devuelve el tile (Vercel lo cachea en su CDN por 24h)
+ * GET /api/tile?year=2017&z=15&x=123&y=456
+ * GET /api/tile?test=1               → devuelve un tile PNG de prueba
+ * GET /api/tile?debug=1&year=2024    → devuelve JSON con info de diagnóstico
  *
  * Variables de entorno:
- *   GCS_BUCKET               -> nombre del bucket
- *   GCS_SERVICE_ACCOUNT_JSON -> JSON del service account
+ *   GCS_BUCKET               → nombre del bucket
+ *   GCS_SERVICE_ACCOUNT_JSON → JSON del service account
  */
 
 const { Storage } = require('@google-cloud/storage');
@@ -19,7 +15,13 @@ const { Storage } = require('@google-cloud/storage');
 const TILE_SIZE = 256;
 const ORIGIN_SHIFT = 20037508.342789244;
 
-// -- Cache de URLs firmadas --
+// 1×1 transparent PNG precalculado (sin dependencias)
+const EMPTY_PNG = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQI12P4z8BQDwAEgAF/QualIQAAAABJRU5ErkJggg==',
+    'base64'
+);
+
+// Cache de URLs firmadas
 let urlCache = {};
 let urlCacheTime = 0;
 
@@ -31,7 +33,7 @@ async function getCogUrl(year) {
     const creds = JSON.parse(process.env.GCS_SERVICE_ACCOUNT_JSON);
     const storage = new Storage({ credentials: creds });
     const [url] = await storage.bucket(process.env.GCS_BUCKET)
-        .file(`raster/satellite_${year}_cog.tif`)
+        .file(`TO_GOOGLE_CLOUD/raster/satellite_${year}_cog.tif`)
         .getSignedUrl({ version: 'v4', action: 'read', expires: now + 3_600_000 });
     urlCache[year] = url;
     urlCacheTime = now;
@@ -48,43 +50,95 @@ function tileBounds(z, x, y) {
     ];
 }
 
-async function emptyTilePng() {
-    // 1x1 transparent PNG (smallest valid PNG)
-    return Buffer.from(
-        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNl7BcQAAAABJRU5ErkJggg==',
-        'base64'
-    );
-}
-
 module.exports = async (req, res) => {
+    // CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
     if (req.method === 'OPTIONS') return res.status(204).end();
 
+    // ─── TEST MODE: retorna un tile rojo para verificar que la función corre ───
+    if (req.query.test === '1') {
+        try {
+            const sharp = (await import('sharp')).default;
+            const png = await sharp({
+                create: { width: 256, height: 256, channels: 4,
+                    background: { r: 255, g: 0, b: 0, alpha: 128 } }
+            }).png().toBuffer();
+            res.setHeader('Content-Type', 'image/png');
+            return res.send(png);
+        } catch (e) {
+            return res.status(200).json({ 
+                test: 'FAILED', 
+                error: e.message,
+                stack: e.stack?.split('\n').slice(0, 5)
+            });
+        }
+    }
+
+    // ─── DEBUG MODE: retorna JSON con info de diagnóstico ───
+    if (req.query.debug === '1') {
+        const info = {
+            node: process.version,
+            platform: process.platform,
+            arch: process.arch,
+            env: {
+                GCS_BUCKET: process.env.GCS_BUCKET ? '✅ set' : '❌ missing',
+                GCS_SERVICE_ACCOUNT_JSON: process.env.GCS_SERVICE_ACCOUNT_JSON ? '✅ set' : '❌ missing',
+            },
+            modules: {}
+        };
+
+        // Test imports
+        try { await import('geotiff'); info.modules.geotiff = '✅'; }
+        catch (e) { info.modules.geotiff = `❌ ${e.message}`; }
+
+        try { await import('sharp'); info.modules.sharp = '✅'; }
+        catch (e) { info.modules.sharp = `❌ ${e.message}`; }
+
+        // Test signed URL generation
+        if (req.query.year) {
+            try {
+                const url = await getCogUrl(req.query.year);
+                info.signedUrl = url.substring(0, 100) + '...';
+                
+                // Test HEAD request to see if file exists
+                const resp = await fetch(url, { method: 'HEAD' });
+                info.gcsFileStatus = resp.status;
+                info.gcsFileSize = resp.headers.get('content-length');
+                info.gcsContentType = resp.headers.get('content-type');
+            } catch (e) {
+                info.signedUrlError = e.message;
+            }
+        }
+
+        return res.status(200).json(info);
+    }
+
+    // ─── NORMAL MODE: servir tile ───
     const year = req.query.year;
     const z = parseInt(req.query.z);
     const x = parseInt(req.query.x);
     const y = parseInt(req.query.y);
 
     if (!['2017', '2024'].includes(year) || [z, x, y].some(isNaN)) {
-        return res.status(400).json({ error: 'Params invalidos: ?year=2017&z=15&x=123&y=456' });
+        return res.status(400).json({ error: 'Usa: ?year=2017&z=15&x=123&y=456' });
     }
 
     try {
-        // Dynamic import porque geotiff es ESM-only en v2+
+        // Dynamic imports (geotiff v2+ es ESM-only)
         const { fromUrl } = await import('geotiff');
         const sharp = (await import('sharp')).default;
 
-        // 1) URL firmada del COG
+        // 1) URL firmada
         const cogUrl = await getCogUrl(year);
 
-        // 2) Abrir COG via HTTP Range Requests
+        // 2) Abrir COG
         const tiff = await fromUrl(cogUrl);
 
-        // 3) Bounds del tile en EPSG:3857
+        // 3) Bounds del tile
         const [tW, tS, tE, tN] = tileBounds(z, x, y);
         const neededRes = (tE - tW) / TILE_SIZE;
 
-        // 4) Seleccionar mejor overview
+        // 4) Mejor overview
         const count = await tiff.getImageCount();
         let img = await tiff.getImage(0);
         let imgRes = Math.abs(img.getResolution()[0]);
@@ -98,13 +152,12 @@ module.exports = async (req, res) => {
             }
         }
 
-        // 5) Metadata
+        // 5) Pixel coords
         const [oX, oY] = img.getOrigin();
         const [rX, rY] = img.getResolution();
         const w = img.getWidth();
         const h = img.getHeight();
 
-        // 6) Tile a coordenadas pixel
         const fL = (tW - oX) / rX;
         const fT = (tN - oY) / rY;
         const fR = (tE - oX) / rX;
@@ -117,10 +170,11 @@ module.exports = async (req, res) => {
         const cR = Math.min(w, Math.ceil(fR));
         const cB = Math.min(h, Math.ceil(fB));
 
+        // Tile fuera del area → transparente
         if (cR <= cL || cB <= cT) {
             res.setHeader('Content-Type', 'image/png');
             res.setHeader('Cache-Control', 'public, s-maxage=86400, max-age=3600');
-            return res.send(await emptyTilePng());
+            return res.send(EMPTY_PNG);
         }
 
         const outW = Math.max(1, Math.round(TILE_SIZE * (cR - cL) / fW));
@@ -128,7 +182,7 @@ module.exports = async (req, res) => {
         const outX = Math.max(0, Math.round(TILE_SIZE * (cL - fL) / fW));
         const outY = Math.max(0, Math.round(TILE_SIZE * (cT - fT) / fH));
 
-        // 9) Leer pixels
+        // 6) Leer pixels
         const rasters = await img.readRasters({
             window: [cL, cT, cR, cB],
             width: outW,
@@ -139,7 +193,7 @@ module.exports = async (req, res) => {
         const channels = img.getSamplesPerPixel();
         const dataBuffer = Buffer.from(rasters);
 
-        // 10) Convertir a PNG
+        // 7) Convertir a PNG
         let png;
         if (outW === TILE_SIZE && outH === TILE_SIZE && outX === 0 && outY === 0) {
             png = await sharp(dataBuffer, {
@@ -151,10 +205,8 @@ module.exports = async (req, res) => {
             }).ensureAlpha().png().toBuffer();
 
             png = await sharp({
-                create: {
-                    width: TILE_SIZE, height: TILE_SIZE, channels: 4,
-                    background: { r: 0, g: 0, b: 0, alpha: 0 }
-                }
+                create: { width: TILE_SIZE, height: TILE_SIZE, channels: 4,
+                    background: { r: 0, g: 0, b: 0, alpha: 0 } }
             })
             .composite([{ input: overlay, left: outX, top: outY }])
             .png()
@@ -166,9 +218,10 @@ module.exports = async (req, res) => {
         return res.send(png);
 
     } catch (err) {
-        console.error('[tile error]', err.message);
+        console.error(`[tile error] year=${year} z=${z} x=${x} y=${y}:`, err.message);
+        // SIEMPRE devolver PNG transparente (nunca HTML ni JSON en error)
         res.setHeader('Content-Type', 'image/png');
-        res.setHeader('Cache-Control', 'public, max-age=60');
-        return res.send(await emptyTilePng());
+        res.setHeader('Cache-Control', 'no-cache');
+        return res.send(EMPTY_PNG);
     }
 };

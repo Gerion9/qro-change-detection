@@ -13,6 +13,9 @@
 const { Storage } = require('@google-cloud/storage');
 
 // Archivos permitidos (whitelist de seguridad)
+// Prefijo = la carpeta raíz dentro del bucket
+const GCS_PREFIX = 'TO_GOOGLE_CLOUD';
+
 const ALLOWED_FILES = [
   'vector/pmtiles/landcover_2016.pmtiles',
   'vector/pmtiles/landcover_2024.pmtiles',
@@ -44,7 +47,7 @@ module.exports = async (req, res) => {
     // Generar todas las URLs en paralelo
     const entries = await Promise.all(
       ALLOWED_FILES.map(async (file) => {
-        const [url] = await storage.bucket(bucket).file(file).getSignedUrl({
+        const [url] = await storage.bucket(bucket).file(`${GCS_PREFIX}/${file}`).getSignedUrl({
           version: 'v4',
           action: 'read',
           expires: expiry

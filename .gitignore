@@ -1,1 +1,8 @@
-node_modules
+node_modules/
+.next/
+out/
+.env
+.env.local
+*.tif
+*.pmtiles
+package-lock.json

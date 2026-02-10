@@ -1,31 +1,12 @@
 {
-  "outputDirectory": "public",
   "functions": {
-    "api/tile.js": {
+    "src/app/api/tile/route.ts": {
       "memory": 1024,
-      "maxDuration": 15
+      "maxDuration": 30
     },
-    "api/signed-urls.js": {
+    "src/app/api/pmtiles/[layer]/route.ts": {
       "memory": 256,
       "maxDuration": 10
     }
-  },
-  "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/$1" },
-    { "source": "/(.*)",     "destination": "/$1" }
-  ],
-  "headers": [
-    {
-      "source": "/api/tile(.*)",
-      "headers": [
-        { "key": "Cache-Control", "value": "public, s-maxage=86400, max-age=3600" }
-      ]
-    },
-    {
-      "source": "/api/signed-urls",
-      "headers": [
-        { "key": "Cache-Control", "value": "private, max-age=3000" }
-      ]
-    }
-  ]
+  }
 }

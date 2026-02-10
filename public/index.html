@@ -109,25 +109,23 @@
     </div>
     <script>
     // =========================================================================
-    // ⚙️  CONFIGURACIÓN — se inyecta automáticamente por build.js
-    //     NO necesitas cambiar nada aquí. Configura en Vercel Dashboard.
+    // CONFIGURACIÓN
     // =========================================================================
-    const TITILER_URL = 'TU_TITILER_URL_AQUI';
     const MAPBOX_TOKEN = 'pk.eyJ1IjoiZ2VyaW9uOSIsImEiOiJjbTg3dzVkOWkwamUwMndvcDBpY2Jjem9lIn0.q_eEy7Z60ddees6luj2xtg';
 
     // =========================================================================
-    // INICIALIZACIÓN — obtener URLs firmadas y luego cargar el mapa
+    // INICIALIZACIÓN
     // =========================================================================
     (async function init() {
         try {
-            // 1) Pedir URLs firmadas al backend (1 sola llamada)
+            // 1) Pedir URLs firmadas para los PMTiles (bucket privado)
             console.log('%c[AUTH] Obteniendo URLs firmadas...', 'color: #FF9800; font-weight: bold;');
             const resp = await fetch('/api/signed-urls');
             if (!resp.ok) throw new Error(`Error ${resp.status}: ${await resp.text()}`);
             const signedUrls = await resp.json();
             console.log('%c[AUTH] URLs firmadas obtenidas ✅', 'color: #4CAF50; font-weight: bold;');
 
-            // 2) Inicializar mapa con las URLs firmadas
+            // 2) Inicializar mapa
             initMap(signedUrls);
 
             // 3) Ocultar loading
@@ -250,22 +248,16 @@
             });
 
             // =============================================================
-            // FUENTES RASTER — COG via TiTiler con URLs firmadas
+            // FUENTES RASTER — COGs servidos por /api/tile (Node.js en Vercel)
             // =============================================================
 
-            function buildRasterSource(year) {
-                const cogSignedUrl = signedUrls[`raster/satellite_${year}_cog.tif`];
-                const encodedUrl = encodeURIComponent(cogSignedUrl);
-                return {
-                    type: 'raster',
-                    tiles: [`${TITILER_URL}/cog/tiles/{z}/{x}/{y}.png?url=${encodedUrl}`],
-                    tileSize: 256,
-                    minzoom: 10,
-                    maxzoom: 18
-                };
-            }
-
-            map.addSource('satellite2017-source', buildRasterSource('2017'));
+            map.addSource('satellite2017-source', {
+                type: 'raster',
+                tiles: ['/api/tile?year=2017&z={z}&x={x}&y={y}'],
+                tileSize: 256,
+                minzoom: 10,
+                maxzoom: 18
+            });
             map.addLayer({
                 'id': 'satellite2017-layer', 'type': 'raster',
                 'source': 'satellite2017-source',
@@ -273,7 +265,13 @@
                 'layout': { 'visibility': 'none' }
             });
 
-            map.addSource('satellite2024-source', buildRasterSource('2024'));
+            map.addSource('satellite2024-source', {
+                type: 'raster',
+                tiles: ['/api/tile?year=2024&z={z}&x={x}&y={y}'],
+                tileSize: 256,
+                minzoom: 10,
+                maxzoom: 18
+            });
             map.addLayer({
                 'id': 'satellite2024-layer', 'type': 'raster',
                 'source': 'satellite2024-source',

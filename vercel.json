@@ -1,13 +1,24 @@
 {
-  "buildCommand": "npm run build",
   "outputDirectory": "public",
+  "functions": {
+    "api/tile.js": {
+      "memory": 1024,
+      "maxDuration": 10
+    }
+  },
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" },
     { "source": "/(.*)",     "destination": "/$1" }
   ],
   "headers": [
     {
-      "source": "/api/(.*)",
+      "source": "/api/tile(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, s-maxage=86400, max-age=3600" }
+      ]
+    },
+    {
+      "source": "/api/signed-urls",
       "headers": [
         { "key": "Cache-Control", "value": "private, max-age=3000" }
       ]

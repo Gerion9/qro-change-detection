@@ -1,12 +1,3 @@
 {
-  "functions": {
-    "src/app/api/tile/route.ts": {
-      "memory": 1024,
-      "maxDuration": 30
-    },
-    "src/app/api/pmtiles/[layer]/route.ts": {
-      "memory": 256,
-      "maxDuration": 10
-    }
-  }
+  "framework": "nextjs"
 }

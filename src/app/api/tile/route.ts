@@ -17,6 +17,7 @@ import { NextResponse } from 'next/server';
 import { getGcsClient, getGcsBucket, getGcsPrefix } from '@/lib/gcs';
 
 export const runtime = 'nodejs';
+export const maxDuration = 30;
 
 const TILE_SIZE = 256;
 const ORIGIN_SHIFT = 20037508.342789244;

@@ -19,6 +19,7 @@ import { servePmtilesRange, type PmtilesSource } from '@/lib/pmtiles-serve';
 import { getGcsBucket, getGcsPrefix } from '@/lib/gcs';
 
 export const runtime = 'nodejs';
+export const maxDuration = 10;
 
 // Whitelist de capas permitidas → ruta dentro del bucket
 const ALLOWED_LAYERS: Record<string, string> = {

@@ -239,49 +239,28 @@ export async function GET(request: NextRequest) {
     const pixelCount = readW * readH;
     const raw = new Uint8Array((rasters as any).buffer ?? (rasters as unknown as ArrayBuffer));
 
-    // 9) Corregir colores si es necesario
-    let channels: 3 | 4 = 3;
-    let pixelData: Buffer;
-
-    if (photometric === 6 && bandCount >= 3) {
-      // YCbCr → RGB
-      pixelData = Buffer.alloc(pixelCount * 3);
-      for (let i = 0; i < pixelCount; i++) {
-        const off = i * bandCount;
-        const Y  = raw[off];
-        const Cb = raw[off + 1];
-        const Cr = raw[off + 2];
-        pixelData[i * 3]     = Math.max(0, Math.min(255, Math.round(Y + 1.402 * (Cr - 128))));
-        pixelData[i * 3 + 1] = Math.max(0, Math.min(255, Math.round(Y - 0.344136 * (Cb - 128) - 0.714136 * (Cr - 128))));
-        pixelData[i * 3 + 2] = Math.max(0, Math.min(255, Math.round(Y + 1.772 * (Cb - 128))));
-      }
-    } else if (bandCount >= 3) {
-      // Copiar RGB directo (sin swap, geotiff.js ya debería devolver RGB)
-      pixelData = Buffer.from(raw.buffer, raw.byteOffset, pixelCount * bandCount);
-      channels = Math.min(bandCount, 4) as 3 | 4;
-    } else {
-      // Grayscale → RGB
-      pixelData = Buffer.alloc(pixelCount * 3);
-      for (let i = 0; i < pixelCount; i++) {
-        pixelData[i * 3] = pixelData[i * 3 + 1] = pixelData[i * 3 + 2] = raw[i];
-      }
-    }
+    // 9) Pasar datos directo — geotiff.js ya maneja la conversión
+    //    YCbCr→RGB internamente al decodificar los tiles JPEG.
+    //    NO hacemos conversión manual (causa doble-conversión e
+    //    inconsistencia de colores entre tiles).
+    const channels: 3 | 4 = Math.min(bandCount, 4) as 3 | 4;
+    const pixelData = Buffer.from(raw.buffer, raw.byteOffset, pixelCount * channels);
 
     // verbose=1 → diagnóstico
     if (verbose) {
       const sample = [];
       for (let i = 0; i < Math.min(5, pixelCount); i++) {
-        const off = i * bandCount;
-        sample.push({ raw: [raw[off], raw[off + 1], raw[off + 2]], rgb: [pixelData[i * 3], pixelData[i * 3 + 1], pixelData[i * 3 + 2]] });
+        const off = i * channels;
+        sample.push({ r: pixelData[off], g: pixelData[off + 1], b: pixelData[off + 2] });
       }
       return NextResponse.json({
-        step: '9-color-corrected',
+        step: '9-passthrough',
         mainSize: [mainW, mainH],
         overviewUsed: { w: bestW, h: bestH, scale: [scaleX, scaleY] },
         readWindow: [cL, cT, cR, cB],
         readSize: [readW, readH],
-        bandCount, photometric,
-        colorFix: photometric === 6 ? 'YCbCr→RGB' : 'direct',
+        bandCount, channels, photometric,
+        colorFix: 'none (geotiff.js handles JPEG YCbCr internally)',
         sample,
       });
     }

@@ -1,13 +1,13 @@
 /**
- * build.js — Inyecta variables de entorno en index.html durante el deploy.
+ * build.js — Inyecta TITILER_URL en index.html durante el build de Vercel.
  *
- * Vercel ejecuta este script automáticamente antes de servir el sitio.
- * Las variables se configuran en el Dashboard de Vercel:
- *   Settings → Environment Variables
+ * Se ejecuta automáticamente con `npm run build`.
+ * La variable se configura en Vercel Dashboard → Settings → Environment Variables.
  *
- * Variables requeridas:
- *   GCS_BUCKET   → nombre del bucket en Google Cloud Storage
- *   TITILER_URL  → URL del servicio TiTiler en Cloud Run
+ * Variables requeridas en Vercel env vars:
+ *   TITILER_URL              → URL del servicio TiTiler en Cloud Run
+ *   GCS_BUCKET               → nombre del bucket (usado por api/signed-urls.js)
+ *   GCS_SERVICE_ACCOUNT_JSON → JSON del service account (usado por api/signed-urls.js)
  */
 
 const fs = require('fs');
@@ -16,15 +16,11 @@ const path = require('path');
 const htmlPath = path.join(__dirname, 'public', 'index.html');
 let html = fs.readFileSync(htmlPath, 'utf-8');
 
-const GCS_BUCKET = process.env.GCS_BUCKET || 'TU_BUCKET_AQUI';
 const TITILER_URL = process.env.TITILER_URL || 'TU_TITILER_URL_AQUI';
 
-html = html.replace("'TU_BUCKET_AQUI'", `'${GCS_BUCKET}'`);
 html = html.replace("'TU_TITILER_URL_AQUI'", `'${TITILER_URL}'`);
 
 fs.writeFileSync(htmlPath, html, 'utf-8');
 
 console.log(`✅ Build completo:`);
-console.log(`   GCS_BUCKET  = ${GCS_BUCKET}`);
 console.log(`   TITILER_URL = ${TITILER_URL}`);
-

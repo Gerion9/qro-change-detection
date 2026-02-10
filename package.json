@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Map viewer for Blackprint Technologies — Vercel + GCS privado",
   "scripts": {
+    "build": "node build.js",
     "start": "serve public"
   },
   "dependencies": {

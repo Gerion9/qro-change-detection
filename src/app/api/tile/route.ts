@@ -162,21 +162,11 @@ export async function GET(request: NextRequest) {
 
     // 3) Bounds del tile en EPSG:3857
     const [tW, tS, tE, tN] = tileBounds(z, x, y);
-    const neededRes = (tE - tW) / TILE_SIZE;
 
-    // 4) Elegir mejor overview
-    const count = await tiff.getImageCount();
-    let img = await tiff.getImage(0);
-    let imgRes = Math.abs(img.getResolution()[0]);
-
-    for (let i = 1; i < count; i++) {
-      const candidate = await tiff.getImage(i);
-      const candRes = Math.abs(candidate.getResolution()[0]);
-      if (candRes <= neededRes * 1.5 && candRes > imgRes) {
-        img = candidate;
-        imgRes = candRes;
-      }
-    }
+    // 4) Usar imagen principal (índice 0) — los overviews del COG no tienen
+    //    geo-referencia compatible con geotiff.js, así que siempre usamos la
+    //    imagen full-res y dejamos que readRasters() resamplee.
+    const img = await tiff.getImage(0);
 
     // 5) Pixel coords
     const [oX, oY] = img.getOrigin();
@@ -197,6 +187,10 @@ export async function GET(request: NextRequest) {
     const cB = Math.min(h, Math.ceil(fB));
 
     if (verbose) {
+      const outW = Math.max(1, Math.round(TILE_SIZE * (cR - cL) / fW));
+      const outH = Math.max(1, Math.round(TILE_SIZE * (cB - cT) / fH));
+      const outX = Math.max(0, Math.round(TILE_SIZE * (cL - fL) / fW));
+      const outY = Math.max(0, Math.round(TILE_SIZE * (cT - fT) / fH));
       return NextResponse.json({
         step: '5-pixelcoords',
         cogSize: { w, h },
@@ -205,9 +199,7 @@ export async function GET(request: NextRequest) {
         tileBounds: { tW, tS, tE, tN },
         floatPixels: { fL, fT, fR, fB, fW, fH },
         clampedPixels: { cL, cT, cR, cB },
-        imageCount: count,
-        selectedRes: imgRes,
-        neededRes,
+        output: { outW, outH, outX, outY },
         bands: img.getSamplesPerPixel(),
         outOfBounds: cR <= cL || cB <= cT,
       });

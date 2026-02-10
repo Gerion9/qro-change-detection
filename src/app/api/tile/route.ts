@@ -214,9 +214,7 @@ export async function GET(request: NextRequest) {
 
     const bandCount = img.getSamplesPerPixel();
     const pixelCount = outW * outH;
-    const data = Buffer.from((rasters as any).buffer
-      ? (rasters as any).buffer
-      : rasters as ArrayBuffer);
+    const data = Buffer.from((rasters as any).buffer ?? (rasters as unknown as ArrayBuffer));
 
     // Detectar si necesitamos corregir colores
     const photometric = img.fileDirectory?.PhotometricInterpretation;

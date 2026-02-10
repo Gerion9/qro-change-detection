@@ -147,6 +147,9 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  // ?verbose=1 → devuelve errores como JSON en vez de PNG vacío (para diagnóstico)
+  const verbose = searchParams.get('verbose') === '1';
+
   try {
     const { fromUrl } = await import('geotiff');
     const sharp = (await import('sharp')).default;
@@ -192,6 +195,23 @@ export async function GET(request: NextRequest) {
     const cT = Math.max(0, Math.floor(fT));
     const cR = Math.min(w, Math.ceil(fR));
     const cB = Math.min(h, Math.ceil(fB));
+
+    if (verbose) {
+      return NextResponse.json({
+        step: '5-pixelcoords',
+        cogSize: { w, h },
+        origin: [oX, oY],
+        resolution: [rX, rY],
+        tileBounds: { tW, tS, tE, tN },
+        floatPixels: { fL, fT, fR, fB, fW, fH },
+        clampedPixels: { cL, cT, cR, cB },
+        imageCount: count,
+        selectedRes: imgRes,
+        neededRes,
+        bands: img.getSamplesPerPixel(),
+        outOfBounds: cR <= cL || cB <= cT,
+      });
+    }
 
     // Tile fuera del área → transparente
     if (cR <= cL || cB <= cT) {
@@ -248,8 +268,14 @@ export async function GET(request: NextRequest) {
       },
     });
   } catch (err: any) {
-    console.error(`[tile error] year=${year} z=${z} x=${x} y=${y}:`, err.message);
-    // Siempre devolver PNG transparente (nunca HTML/JSON en error de tile)
+    console.error(`[tile error] year=${year} z=${z} x=${x} y=${y}:`, err.message, err.stack?.split('\n').slice(0, 3));
+    if (verbose) {
+      return NextResponse.json({
+        error: err.message,
+        stack: err.stack?.split('\n').slice(0, 5),
+        year, z, x, y,
+      }, { status: 500 });
+    }
     return new NextResponse(EMPTY_PNG, {
       headers: {
         'Content-Type': 'image/png',

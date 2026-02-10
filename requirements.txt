@@ -1,0 +1,5 @@
+# Python dependencies for local tile server (tile_server.py)
+# GDAL se instala mejor con conda:  conda install -c conda-forge gdal
+numpy
+Pillow
+

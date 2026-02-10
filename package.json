@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Map viewer - Vercel (Node.js) + Python tile server local",
   "scripts": {
+    "build": "echo 'No build step needed'",
     "dev": "node dev-server.js",
     "start": "serve public"
   },
